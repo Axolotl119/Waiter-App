@@ -1,6 +1,8 @@
 class MenuItemModel {
   final String id;
   String name;
+  String? description;
+  String? image;
   double price;
   String category;
 
