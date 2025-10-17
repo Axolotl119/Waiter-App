@@ -217,7 +217,7 @@ class _MenuTab extends StatelessWidget {
                 child: ListTile(
                   leading: const Icon(Icons.fastfood),
                   title: Text(m.name),
-                  subtitle: Text('${m.category} • ${_vnd(m.price)}'),
+                  subtitle: Text('${m.categoryId} • ${_vnd(m.price)}'),
                   trailing: Wrap(
                     children: [
                       IconButton(
@@ -245,7 +245,7 @@ class _MenuTab extends StatelessWidget {
     final priceCtl = TextEditingController(
       text: it?.price.toStringAsFixed(0) ?? '',
     );
-    final catCtl = TextEditingController(text: it?.category ?? '');
+    final catCtl = TextEditingController(text: it?.categoryId ?? '');
     final key = GlobalKey<FormState>();
 
     await showModalBottomSheet(
@@ -312,7 +312,7 @@ class _MenuTab extends StatelessWidget {
                                   .toString(),
                               name: nameCtl.text.trim(),
                               price: price,
-                              category: catCtl.text.trim(),
+                              categoryId: catCtl.text.trim(),
                             ),
                           );
                         } else {
@@ -367,5 +367,5 @@ String _vnd(double v) {
     b.write(s[i]);
     if (left > 0 && left % 3 == 0) b.write('.');
   }
-  return '${b} đ';
+  return '$b đ';
 }

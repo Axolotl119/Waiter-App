@@ -51,16 +51,17 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
-                    onPressed: () {
+                    onPressed: () async {
                       if (!keyForm.currentState!.validate()) return;
                       final r = repo.register(
                         email: emailCtl.text.trim(),
                         password: passCtl.text.trim(),
                       );
+                      // ignore: unrelated_type_equality_checks
                       if (r != 'OK') {
                         ScaffoldMessenger.of(
                           context,
-                        ).showSnackBar(SnackBar(content: Text(r)));
+                        ).showSnackBar(SnackBar(content: Text(await r)));
                         return;
                       }
                       Navigator.pop(context);
