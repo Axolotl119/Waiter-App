@@ -94,5 +94,5 @@ String _vnd(double v) {
     b.write(s[i]);
     if (left > 0 && left % 3 == 0) b.write('.');
   }
-  return '${b} đ';
+  return '$b đ';
 }

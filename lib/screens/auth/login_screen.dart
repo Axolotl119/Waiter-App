@@ -51,19 +51,24 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 12),
                   FilledButton(
-                    onPressed: () {
-                      if (!keyForm.currentState!.validate()) return;
-                      final r = repo.login(
+                    onPressed: () async {
+                      // trong onPressed nút Đăng nhập
+                      final repo = InheritedApp.of(context);
+                      if (!(keyForm.currentState?.validate() ?? false)) return;
+
+                      final msg = await repo.login(
                         email: emailCtl.text.trim(),
-                        password: passCtl.text.trim(),
+                        password: passCtl.text,
                       );
-                      if (r != 'OK') {
+                      if (!mounted) return;
+                      if (msg == 'OK') {
+                        // KHÔNG điều hướng ở đây. AuthGate sẽ tự chuyển màn.
+                        // Có thể show 1 snack bar nhẹ nếu muốn.
+                      } else {
                         ScaffoldMessenger.of(
                           context,
-                        ).showSnackBar(SnackBar(content: Text(r)));
-                        return;
+                        ).showSnackBar(SnackBar(content: Text(msg)));
                       }
-                      Navigator.pushReplacementNamed(context, '/select_table');
                     },
                     child: const Text('Đăng nhập'),
                   ),

@@ -4,8 +4,9 @@ class CartItem {
   final String id;
   final MenuItemModel item;
   int qty;
-
-  CartItem({required this.id, required this.item, required this.qty});
-
+  String? note;
+  CartItem({required this.id, required this.item, required this.qty, this.note});
   double get lineTotal => item.price * qty;
 }
+
+

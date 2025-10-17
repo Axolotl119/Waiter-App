@@ -1,175 +1,255 @@
-import 'package:flutter/foundation.dart';
+import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/widgets.dart';
+
 import '../models/user.dart';
 import '../models/table_model.dart';
 import '../models/menu_item_model.dart';
 import '../models/cart_item.dart';
+import '../models/category_model.dart';
 
-// -----------------------------
-// App-wide state: auth + data + cart
-// -----------------------------
+/// Đặt RID quán của bạn (hoặc truyền qua constructor)
+const String _defaultRestaurantId = 'default_restaurant';
+
 class AppRepository extends ChangeNotifier {
+  AppRepository({String? restaurantId})
+      : _rid = restaurantId ?? _defaultRestaurantId;
+
+  // ---------- Firebase ----------
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
+  final String _rid;
+
   // ---------- AUTH ----------
   AppUser? _currentUser;
-  final List<AppUser> _users = [];
-
   AppUser? get currentUser => _currentUser;
   bool get isLoggedIn => _currentUser != null;
-  bool get isAdmin => _currentUser?.role == UserRole.admin;
 
-  // ---------- DATA ----------
+  // ---------- DATA (được đồng bộ từ Firestore) ----------
   final List<TableModel> _tables = [];
+  final List<CategoryModel> _categories = [];
   final List<MenuItemModel> _menu = [];
   TableModel? _selectedTable;
-  final List<CartItem> _cart = [];
 
   List<TableModel> get tables => List.unmodifiable(_tables);
+  List<CategoryModel> get categories => List.unmodifiable(_categories);
   List<MenuItemModel> get menu => List.unmodifiable(_menu);
   TableModel? get selectedTable => _selectedTable;
+
+  // ---------- CART (local) ----------
+  final List<CartItem> _cart = [];
   List<CartItem> get cart => List.unmodifiable(_cart);
   double get cartTotal => _cart.fold(0, (s, c) => s + c.lineTotal);
 
-  // ---------- MOCK DATA ----------
-  void seed() {
-    // demo users
-    _users.addAll([
-      AppUser(
-        id: _id(),
-        email: 'admin@demo.com',
-        password: '123456',
-        role: UserRole.admin,
-      ),
-      AppUser(
-        id: _id(),
-        email: 'guest@demo.com',
-        password: '123456',
-        role: UserRole.customer,
-      ),
-    ]);
+  // ---------- Subscriptions ----------
+  StreamSubscription? _tablesSub;
+  StreamSubscription? _menuSub;
+  StreamSubscription<User?>? _authSub;
 
-    // demo tables
-    _tables.addAll([
-      TableModel(id: _id(), name: 'Bàn 1', capacity: 2),
-      TableModel(id: _id(), name: 'Bàn 2', capacity: 4),
-      TableModel(id: _id(), name: 'Bàn 3', capacity: 6, isAvailable: false),
-    ]);
+  
 
-    // demo menu
-    _menu.addAll([
-      MenuItemModel(
-        id: _id(),
-        name: 'Cà phê sữa',
-        price: 22000,
-        category: 'Đồ uống',
-      ),
-      MenuItemModel(
-        id: _id(),
-        name: 'Trà đào',
-        price: 26000,
-        category: 'Đồ uống',
-      ),
-      MenuItemModel(
-        id: _id(),
-        name: 'Mì xào bò',
-        price: 45000,
-        category: 'Món chính',
-      ),
-      MenuItemModel(
-        id: _id(),
-        name: 'Cơm gà',
-        price: 38000,
-        category: 'Món chính',
-      ),
-    ]);
+  // Call ở app start (sau khi Firebase.initializeApp)
+  Future<void> init() async {
+    // Auth changes -> load user profile
+    _authSub = _auth.authStateChanges().listen((u) async {
+      if (u == null) {
+        _currentUser = null;
+        notifyListeners();
+        return;
+      }
+      final userDoc = await _db.collection('users').doc(u.uid).get();
+      final roleStr = (userDoc.data()?['role'] as String?) ?? 'waiter';
+      _currentUser = AppUser(
+        id: u.uid,
+        email: u.email ?? '',
+        password: '', // không dùng nữa
+        role: roleStr == 'admin' ? UserRole.admin : UserRole.waiter,
+      );
+      notifyListeners();
+    });
+
+    // Listen Tables
+    _tablesSub = _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('tables')
+        .orderBy('name')
+        .snapshots()
+        .listen((snap) {
+      _tables
+        ..clear()
+        ..addAll(snap.docs.map((d) {
+          final m = d.data();
+          return TableModel(
+            id: d.id,
+            name: (m['name'] ?? '') as String,
+            capacity: (m['capacity'] ?? 0) as int,
+            isAvailable: (m['isAvailable'] ?? true) as bool,
+          );
+        }));
+      notifyListeners();
+    });
+
+    // Listen Menu Items
+    _menuSub = _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('menu_items')
+        .orderBy('name')
+        .snapshots()
+        .listen((snap) {
+      _menu
+        ..clear()
+        ..addAll(snap.docs.map((d) {
+          final m = d.data();
+          return MenuItemModel(
+            id: d.id,
+            name: (m['name'] ?? '') as String,
+            price: (m['price'] ?? 0).toDouble(),
+            categoryId: (m['categoryId'] ?? m['category'] ?? '') as String,
+          );
+        }));
+      notifyListeners();
+    });
   }
 
-  // ---------- AUTH ----------
-  String register({required String email, required String password}) {
-    if (_users.any((u) => u.email == email)) {
-      return 'Email đã tồn tại';
+  @override
+  void dispose() {
+    _tablesSub?.cancel();
+    _menuSub?.cancel();
+    _authSub?.cancel();
+    super.dispose();
+  }
+
+  // ---------------- AUTH ----------------
+
+  /// Đăng ký bằng Firebase Auth, mặc định role = waiter
+  Future<String> register({required String email, required String password}) async {
+    try {
+      final cred = await _auth.createUserWithEmailAndPassword(
+        email: email, password: password,
+      );
+      await _db.collection('users').doc(cred.user!.uid).set({
+        'email': email,
+        'role': 'waiter',
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+      return 'OK';
+    } on FirebaseAuthException catch (e) {
+      return e.message ?? 'Đăng ký thất bại';
+    } catch (_) {
+      return 'Đăng ký thất bại';
     }
-    _users.add(
-      AppUser(
-        id: _id(),
-        email: email,
-        password: password,
-        role: UserRole.customer,
-      ),
-    );
-    notifyListeners();
-    return 'OK';
   }
 
-  String login({required String email, required String password}) {
-    final u = _users
-        .where((u) => u.email == email && u.password == password)
-        .toList();
-    if (u.isEmpty) return 'Sai email hoặc mật khẩu';
-    _currentUser = u.first;
-    notifyListeners();
-    return 'OK';
+  /// Đăng nhập bằng Firebase Auth
+  Future<String> login({required String email, required String password}) async {
+    try {
+      await _auth.signInWithEmailAndPassword(email: email, password: password);
+      return 'OK';
+    } on FirebaseAuthException catch (e) {
+      return e.message ?? 'Sai email hoặc mật khẩu';
+    } catch (_) {
+      return 'Sai email hoặc mật khẩu';
+    }
   }
 
-  void logout() {
-    _currentUser = null;
+  Future<void> logout() async {
+    await _auth.signOut();
     _selectedTable = null;
     _cart.clear();
     notifyListeners();
   }
 
-  // ---------- TABLES (ADMIN) ----------
-  void addTable(TableModel t) {
-    _tables.add(t);
-    notifyListeners();
+  // ---------------- ADMIN: TABLES ----------------
+
+  Future<void> addTable(TableModel t) async {
+    final doc = _db.collection('restaurants').doc(_rid).collection('tables').doc(t.id);
+    await doc.set({
+      'name': t.name,
+      'capacity': t.capacity,
+      'isAvailable': t.isAvailable,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    // Listener sẽ đồng bộ vào _tables
   }
 
-  void updateTable(
+  Future<void> updateTable(
     String id, {
     String? name,
     int? capacity,
     bool? isAvailable,
-  }) {
-    final i = _tables.indexWhere((e) => e.id == id);
-    if (i != -1) {
-      if (name != null) _tables[i].name = name;
-      if (capacity != null) _tables[i].capacity = capacity;
-      if (isAvailable != null) _tables[i].isAvailable = isAvailable;
-      notifyListeners();
-    }
+  }) async {
+    final data = <String, Object?>{};
+    if (name != null) data['name'] = name;
+    if (capacity != null) data['capacity'] = capacity;
+    if (isAvailable != null) data['isAvailable'] = isAvailable;
+    if (data.isEmpty) return;
+    data['updatedAt'] = FieldValue.serverTimestamp();
+
+    await _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('tables')
+        .doc(id)
+        .update(data);
   }
 
-  void deleteTable(String id) {
-    _tables.removeWhere((e) => e.id == id);
-    notifyListeners();
+  Future<void> deleteTable(String id) async {
+    await _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('tables')
+        .doc(id)
+        .delete();
   }
 
-  // ---------- MENU (ADMIN) ----------
-  void addMenuItem(MenuItemModel m) {
-    _menu.add(m);
-    notifyListeners();
+  // ---------------- ADMIN: MENU ----------------
+
+  Future<void> addMenuItem(MenuItemModel m) async {
+    final doc = _db.collection('restaurants').doc(_rid).collection('menu_items').doc(m.id);
+    await doc.set({
+      'name': m.name,
+      'price': m.price,
+      // chấp nhận cả 'category' hay 'categoryId' (tuỳ DB bạn đang có)
+      'categoryId': m.categoryId,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
   }
 
-  void updateMenuItem(
+  Future<void> updateMenuItem(
     String id, {
     String? name,
     double? price,
     String? category,
-  }) {
-    final i = _menu.indexWhere((e) => e.id == id);
-    if (i != -1) {
-      if (name != null) _menu[i].name = name;
-      if (price != null) _menu[i].price = price;
-      if (category != null) _menu[i].category = category;
-      notifyListeners();
-    }
+  }) async {
+    final data = <String, Object?>{};
+    if (name != null) data['name'] = name;
+    if (price != null) data['price'] = price;
+    if (category != null) data['categoryId'] = category;
+    if (data.isEmpty) return;
+    data['updatedAt'] = FieldValue.serverTimestamp();
+
+    await _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('menu_items')
+        .doc(id)
+        .update(data);
   }
 
-  void deleteMenuItem(String id) {
-    _menu.removeWhere((e) => e.id == id);
-    notifyListeners();
+  Future<void> deleteMenuItem(String id) async {
+    await _db
+        .collection('restaurants')
+        .doc(_rid)
+        .collection('menu_items')
+        .doc(id)
+        .delete();
   }
 
-  // ---------- CUSTOMER FLOW ----------
+  // ---------------- CUSTOMER FLOW ----------------
+
   void selectTable(TableModel t) {
     _selectedTable = t;
     notifyListeners();
@@ -204,10 +284,58 @@ class AppRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------- CHECKOUT ----------
-  void checkout() {
+  /// Gửi order lên Firestore (orders + items), sau đó xóa giỏ.
+  Future<void> checkout() async {
+    if (_selectedTable == null || _cart.isEmpty || _currentUser == null) {
+      // Không đủ dữ liệu để tạo order
+      clearCart();
+      return;
+    }
+
+    final ordersCol =
+        _db.collection('restaurants').doc(_rid).collection('orders');
+    final orderRef = ordersCol.doc();
+
+    await _db.runTransaction((tx) async {
+      tx.set(orderRef, {
+        'tableId': _selectedTable!.id,
+        'waiterId': _currentUser!.id,
+        'status': 'new',
+        'subtotal': cartTotal,
+        'discount': 0,
+        'serviceCharge': 0,
+        'tax': 0,
+        'total': cartTotal,
+        'itemsCount': _cart.fold<int>(0, (s, c) => s + c.qty),
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      final itemsCol = orderRef.collection('items');
+      for (final c in _cart) {
+        final itemRef = itemsCol.doc();
+        tx.set(itemRef, {
+          'menuItemId': c.item.id,
+          'name': c.item.name,
+          'price': c.item.price,
+          'qty': c.qty,
+          'note': c.note,
+          'lineStatus': 'new',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      // (Tuỳ chọn) Đánh dấu bàn đang dùng:
+      // final tableRef = _db.collection('restaurants').doc(_rid).collection('tables').doc(_selectedTable!.id);
+      // tx.update(tableRef, {
+      //   'isAvailable': false,
+      //   'currentOrderId': orderRef.id,
+      //   'updatedAt': FieldValue.serverTimestamp(),
+      // });
+    });
+
     clearCart();
-    notifyListeners();
   }
 
   // ---------- UTIL ----------
@@ -215,13 +343,12 @@ class AppRepository extends ChangeNotifier {
 }
 
 // -----------------------------------------------------------
-// ✅ FIXED VERSION OF InheritedApp
+// InheritedApp giữ nguyên để UI hiện tại không phải đổi
 // -----------------------------------------------------------
 class InheritedApp extends InheritedNotifier<AppRepository> {
   final AppRepository repo;
-
-  const InheritedApp({Key? key, required this.repo, required Widget child})
-    : super(key: key, notifier: repo, child: child);
+  const InheritedApp({super.key, required this.repo, required super.child})
+      : super(notifier: repo);
 
   static AppRepository of(BuildContext context) {
     final i = context.dependOnInheritedWidgetOfExactType<InheritedApp>();
@@ -229,3 +356,4 @@ class InheritedApp extends InheritedNotifier<AppRepository> {
     return i!.repo;
   }
 }
+

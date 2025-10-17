@@ -31,7 +31,7 @@ class MenuScreen extends StatelessWidget {
             child: ListTile(
               leading: const Icon(Icons.fastfood),
               title: Text(m.name),
-              subtitle: Text('${m.category} • ${_vnd(m.price)}'),
+              subtitle: Text('${m.categoryId} • ${_vnd(m.price)}'),
               trailing: IconButton(
                 icon: const Icon(Icons.add),
                 onPressed: () => repo.addToCart(m),
@@ -52,5 +52,5 @@ String _vnd(double v) {
     b.write(s[i]);
     if (left > 0 && left % 3 == 0) b.write('.');
   }
-  return '${b} đ';
+  return '$b đ';
 }
