@@ -7,7 +7,7 @@ import 'data/app_repository.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/register_screen.dart';
 import 'screens/tables/table_screen.dart';
-import 'screens/waiter/menu_screen.dart';
+import 'screens/menu/menu_screen.dart';
 import 'screens/cart/cart_screen.dart';
 import 'screens/success/order_success_screen.dart';
 import 'screens/admin/admin_dashboard.dart';

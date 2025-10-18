@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import '../../data/app_repository.dart';
 import 'login_screen.dart';
-import '../waiter/menu_screen.dart'; // hoặc màn bạn muốn vào sau login
+import '../menu/menu_screen.dart'; // hoặc màn bạn muốn vào sau login
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
