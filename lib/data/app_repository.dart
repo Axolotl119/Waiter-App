@@ -5,12 +5,13 @@ import 'package:flutter/widgets.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-import '../core/firestore_paths.dart'; // dùng class FP.* (không alias)
+import '../core/firestore_paths.dart'; // class FP { static String users() ... }
 import '../models/user.dart';
 import '../models/table_model.dart';
 import '../models/category_model.dart';
 import '../models/menu_item_model.dart';
 import '../models/cart_item.dart';
+import '../models/revenue_point.dart';
 
 class AppRepository extends ChangeNotifier {
   AppRepository({String? restaurantId})
@@ -21,7 +22,7 @@ class AppRepository extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
   final String _rid;
 
-  // Auth state
+  // Auth
   AppUser? _currentUser;
   AppUser? get currentUser => _currentUser;
   bool get isLoggedIn => _currentUser != null;
@@ -32,15 +33,17 @@ class AppRepository extends ChangeNotifier {
   final List<MenuItemModel> _menu = [];
   final List<CartItem> _cart = [];
   TableModel? _selectedTable;
+  String? _activeOrderId;
 
   List<TableModel> get tables => List.unmodifiable(_tables);
   List<CategoryModel> get categories => List.unmodifiable(_categories);
   List<MenuItemModel> get menu => List.unmodifiable(_menu);
   List<CartItem> get cart => List.unmodifiable(_cart);
   TableModel? get selectedTable => _selectedTable;
+  String? get activeOrderId => _activeOrderId;
 
   int get cartItemsCount => _cart.fold<int>(0, (s, c) => s + c.qty);
-  double get cartTotal => _cart.fold<double>(0, (s, c) => s + c.lineTotal);
+  double get cartTotal => _cart.fold<double>(0, (s, c) => s + (c.item.price * c.qty));
 
   // Streams
   StreamSubscription<User?>? _authSub;
@@ -97,7 +100,7 @@ class AppRepository extends ChangeNotifier {
   }) async {
     try {
       await _auth.signInWithEmailAndPassword(email: email, password: password);
-      return 'OK'; // AuthGate sẽ tự điều hướng
+      return 'OK'; // AuthGate tự điều hướng
     } on FirebaseAuthException catch (e) {
       return e.message ?? 'Sai email hoặc mật khẩu';
     } catch (_) {
@@ -106,7 +109,7 @@ class AppRepository extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    await _auth.signOut(); // AuthGate sẽ quay về Login
+    await _auth.signOut();
   }
 
   // =========== Streams bind/unbind theo auth ===========
@@ -116,8 +119,8 @@ class AppRepository extends ChangeNotifier {
     _currentUser = AppUser(
       id: u.uid,
       email: u.email ?? '',
-      password: u.refreshToken ?? '',
       role: roleStr == 'admin' ? UserRole.admin : UserRole.waiter,
+      password: '',
     );
 
     _startDataStreams();
@@ -127,6 +130,7 @@ class AppRepository extends ChangeNotifier {
   void _onSignedOut() {
     _currentUser = null;
     _selectedTable = null;
+    _activeOrderId = null;
     _cart.clear();
     _tables.clear();
     _categories.clear();
@@ -147,6 +151,11 @@ class AppRepository extends ChangeNotifier {
       _tables
         ..clear()
         ..addAll(snap.docs.map((d) => TableModel.fromMap(d.id, d.data())));
+      // nếu selected table trùng id, đồng bộ field mới
+      if (_selectedTable != null) {
+        final match = _tables.where((x) => x.id == _selectedTable!.id).toList();
+        if (match.isNotEmpty) _selectedTable = match.first;
+      }
       notifyListeners();
     }, onError: _log('tables'));
 
@@ -188,13 +197,21 @@ class AppRepository extends ChangeNotifier {
   // ================ Waiter flow (bàn & giỏ) ================
   void selectTable(TableModel t) {
     _selectedTable = t;
+    _activeOrderId = t.currentOrderId;
     notifyListeners();
   }
 
   void selectTableById(String tableId) {
     final t = _tables.firstWhere(
       (x) => x.id == tableId,
-      orElse: () => TableModel(id: tableId, name: tableId, capacity: 0),
+      orElse: () => TableModel(
+        id: tableId,
+        name: tableId,
+        capacity: 0,
+        isAvailable: true,
+        currentOrderId: null,
+        state: TableState.vacant,
+      ),
     );
     selectTable(t);
   }
@@ -256,31 +273,68 @@ class AppRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Tạo Order + Items; có thể đánh dấu bàn đang dùng.
-  Future<String?> checkout({bool markTableBusy = true}) async {
-    if (_selectedTable == null || _cart.isEmpty || _currentUser == null) {
-      return null;
+  // ====== Flow mới: seat → open order → gửi món → billed → paid ======
+
+  /// Seat table: nếu bàn trống → tạo order rỗng (status 'open') & đánh dấu bàn bận.
+  /// Nếu bàn đã có order mở → chỉ load lại _activeOrderId.
+  Future<void> seatTable(TableModel t, {int? covers}) async {
+    _selectedTable = t;
+    notifyListeners();
+    if (_currentUser == null) return;
+
+    final tableRef = _db.collection(FP.tables(_rid)).doc(t.id);
+
+    if ((t.currentOrderId ?? '').isNotEmpty) {
+      _activeOrderId = t.currentOrderId;
+      return;
     }
 
     final orderRef = _db.collection(FP.orders(_rid)).doc();
-    final tableRef = _db.collection(FP.tables(_rid)).doc(_selectedTable!.id);
-
     await _db.runTransaction((tx) async {
       tx.set(orderRef, {
-        'tableId': _selectedTable!.id,
+        'tableId': t.id,
         'waiterId': _currentUser!.id,
-        'status': 'new',
-        'subtotal': cartTotal,
-        'discount': 0,
-        'serviceCharge': 0,
-        'tax': 0,
-        'total': cartTotal,
-        'itemsCount': cartItemsCount,
-        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'open',
+        'covers': covers,
+        'subtotal': 0.0,
+        'discount': 0.0,
+        'serviceCharge': 0.0,
+        'tax': 0.0,
+        'total': 0.0,
+        'itemsCount': 0,
+        'openedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'closedAt': null,
+      });
+      tx.update(tableRef, {
+        'isAvailable': false,
+        'state': 'occupied',
+        'currentOrderId': orderRef.id,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+    });
 
-      final itemsCol = _db.collection(FP.orderItems(_rid, orderRef.id));
+    _activeOrderId = orderRef.id;
+    _selectedTable = _selectedTable!.copyWith(
+      isAvailable: false,
+      currentOrderId: _activeOrderId,
+      state: TableState.occupied,
+    );
+    notifyListeners();
+  }
+
+  /// Gửi giỏ hiện tại vào order đang mở (gửi bếp một đợt).
+  Future<void> sendCartToKitchen() async {
+    if (_activeOrderId == null || _cart.isEmpty) return;
+
+    final orderId = _activeOrderId!;
+    final orderRef = _db.collection(FP.orders(_rid)).doc(orderId);
+    final itemsCol = _db.collection(FP.orderItems(_rid, orderId));
+
+    final deltaTotal = cartTotal;
+    final deltaCount = cartItemsCount;
+
+    await _db.runTransaction((tx) async {
       for (final c in _cart) {
         tx.set(itemsCol.doc(), {
           'menuItemId': c.item.id,
@@ -288,145 +342,150 @@ class AppRepository extends ChangeNotifier {
           'price': c.item.price,
           'qty': c.qty,
           'note': c.note,
-          'lineStatus': 'new',
+          'lineStatus': 'new', // hoặc 'fired'
           'createdAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
       }
-
-      if (markTableBusy) {
-        tx.update(tableRef, {
-          'isAvailable': false,
-          'currentOrderId': orderRef.id,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      }
+      tx.update(orderRef, {
+        'status': 'open',
+        'subtotal': FieldValue.increment(deltaTotal),
+        'total': FieldValue.increment(deltaTotal),
+        'itemsCount': FieldValue.increment(deltaCount),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     });
 
     clearCart();
-    return orderRef.id;
   }
 
-  /// Thanh toán + trả bàn.
-  Future<void> closeOrderAndFreeTable(String orderId) async {
-    final orderRef = _db.collection(FP.orders(_rid)).doc(orderId);
-    final snap = await orderRef.get();
-    final tableId = snap.data()?['tableId'] as String?;
-    if (tableId == null) return;
+  /// Khách xin tính tiền -> 'billed' + bàn 'billed'
+  Future<void> requestBill() async {
+    if (_activeOrderId == null) return;
+    final orderRef = _db.collection(FP.orders(_rid)).doc(_activeOrderId);
+    await orderRef.update({
+      'status': 'billed',
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+    if (_selectedTable != null) {
+      await _db.collection(FP.tables(_rid)).doc(_selectedTable!.id).update({
+        'state': 'billed',
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _selectedTable = _selectedTable!.copyWith(state: TableState.billed);
+      notifyListeners();
+    }
+  }
 
-    final tableRef = _db.collection(FP.tables(_rid)).doc(tableId);
+  /// Thanh toán -> 'paid' + closedAt + bàn 'vacant'
+  Future<void> payAndFreeTable() async {
+    if (_activeOrderId == null || _selectedTable == null) return;
+
+    final orderRef = _db.collection(FP.orders(_rid)).doc(_activeOrderId);
+    final tableRef = _db.collection(FP.tables(_rid)).doc(_selectedTable!.id);
+
     await _db.runTransaction((tx) async {
       tx.update(orderRef, {
         'status': 'paid',
+        'closedAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
       tx.update(tableRef, {
         'isAvailable': true,
+        'state': 'vacant',
         'currentOrderId': null,
         'updatedAt': FieldValue.serverTimestamp(),
       });
     });
+
+    _activeOrderId = null;
+    _selectedTable = _selectedTable!.copyWith(
+      isAvailable: true,
+      currentOrderId: null,
+      state: TableState.vacant,
+    );
+    notifyListeners();
   }
 
-  // ================ Admin CRUD ================
-  // Tables
-  Future<void> addTable(TableModel t) async {
-    final doc = _db.collection(FP.tables(_rid)).doc(t.id);
-    await doc.set({
-      'name': t.name,
-      'capacity': t.capacity,
-      'isAvailable': t.isAvailable,
-      'currentOrderId': t.currentOrderId,
-      'updatedAt': FieldValue.serverTimestamp(),
+  /// Huỷ order mở và trả bàn
+  Future<void> voidOpenOrderAndFreeTable() async {
+    if (_activeOrderId == null || _selectedTable == null) return;
+
+    final orderRef = _db.collection(FP.orders(_rid)).doc(_activeOrderId);
+    final tableRef = _db.collection(FP.tables(_rid)).doc(_selectedTable!.id);
+
+    await _db.runTransaction((tx) async {
+      tx.update(orderRef, {
+        'status': 'void',
+        'closedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      tx.update(tableRef, {
+        'isAvailable': true,
+        'state': 'vacant',
+        'currentOrderId': null,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     });
+
+    _activeOrderId = null;
+    _selectedTable = _selectedTable!.copyWith(
+      isAvailable: true,
+      currentOrderId: null,
+      state: TableState.vacant,
+    );
+    clearCart();
+    notifyListeners();
   }
 
-  Future<void> updateTable(
-    String id, {
-    String? name,
-    int? capacity,
-    bool? isAvailable,
-    String? currentOrderId,
+  // ================ Analytics: doanh thu ================
+  /// Lấy doanh thu từ các order **paid** theo khoảng [from, to) gộp theo ngày/tháng.
+  /// Dùng `closedAt` để phản ánh thời điểm thanh toán.
+  Future<List<RevenuePoint>> fetchRevenue({
+    required DateTime from,
+    required DateTime to,
+    RevenueGroupBy groupBy = RevenueGroupBy.day,
   }) async {
-    final data = <String, Object?>{};
-    if (name != null) data['name'] = name;
-    if (capacity != null) data['capacity'] = capacity;
-    if (isAvailable != null) data['isAvailable'] = isAvailable;
-    if (currentOrderId != null) data['currentOrderId'] = currentOrderId;
-    if (data.isEmpty) return;
-    data['updatedAt'] = FieldValue.serverTimestamp();
-    await _db.collection(FP.tables(_rid)).doc(id).update(data);
-  }
+    final fromUtc = from.toUtc();
+    final toUtc = to.toUtc();
 
-  Future<void> deleteTable(String id) async {
-    await _db.collection(FP.tables(_rid)).doc(id).delete();
-  }
+    final snap = await _db
+        .collection(FP.orders(_rid))
+        .where('status', isEqualTo: 'paid')
+        .where('closedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(fromUtc))
+        .where('closedAt', isLessThan: Timestamp.fromDate(toUtc))
+        .orderBy('closedAt', descending: false)
+        .get();
 
-  // Categories
-  Future<void> addCategory(CategoryModel c) async {
-    final doc = _db.collection(FP.categories(_rid)).doc(c.id);
-    await doc.set({
-      'name': c.name,
-      'image': c.image,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
-  }
+    final Map<DateTime, _Agg> agg = {};
+    for (final d in snap.docs) {
+      final data = d.data();
+      final ts = data['closedAt'];
+      if (ts == null) continue;
+      final closed = (ts as Timestamp).toDate().toLocal();
+      final total = (data['total'] ?? 0).toDouble();
 
-  Future<void> updateCategory(
-    String id, {
-    String? name,
-    String? image,
-  }) async {
-    final data = <String, Object?>{};
-    if (name != null) data['name'] = name;
-    if (image != null) data['image'] = image;
-    if (data.isEmpty) return;
-    data['updatedAt'] = FieldValue.serverTimestamp();
-    await _db.collection(FP.categories(_rid)).doc(id).update(data);
-  }
+      final bucket = (groupBy == RevenueGroupBy.day)
+          ? DateTime(closed.year, closed.month, closed.day)
+          : DateTime(closed.year, closed.month);
 
-  Future<void> deleteCategory(String id) async {
-    await _db.collection(FP.categories(_rid)).doc(id).delete();
-  }
+      final cur = agg[bucket] ?? _Agg.zero();
+      agg[bucket] = cur.add(total);
+    }
 
-  // Menu items
-  Future<void> addMenuItem(MenuItemModel m) async {
-    final doc = _db.collection(FP.menuItems(_rid)).doc(m.id);
-    await doc.set({
-      'name': m.name,
-      'price': m.price,
-      'categoryId': m.categoryId,
-      'description': m.description,
-      'image': m.image,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+    final keys = agg.keys.toList()..sort();
+    return keys
+        .map((k) => RevenuePoint(bucket: k, total: agg[k]!.sum, orders: agg[k]!.count))
+        .toList();
   }
+}
 
-  /// Hỗ trợ cả `categoryId:` và alias cũ `category:`
-  Future<void> updateMenuItem(
-    String id, {
-    String? name,
-    double? price,
-    String? categoryId,
-    String? category, // alias
-    String? description,
-    String? image,
-  }) async {
-    final data = <String, Object?>{};
-    if (name != null) data['name'] = name;
-    if (price != null) data['price'] = price;
-    final cid = categoryId ?? category;
-    if (cid != null) data['categoryId'] = cid;
-    if (description != null) data['description'] = description;
-    if (image != null) data['image'] = image;
-    if (data.isEmpty) return;
-    data['updatedAt'] = FieldValue.serverTimestamp();
-    await _db.collection(FP.menuItems(_rid)).doc(id).update(data);
-  }
-
-  Future<void> deleteMenuItem(String id) async {
-    await _db.collection(FP.menuItems(_rid)).doc(id).delete();
-  }
+class _Agg {
+  final double sum;
+  final int count;
+  _Agg(this.sum, this.count);
+  factory _Agg.zero() => _Agg(0, 0);
+  _Agg add(double v) => _Agg(sum + v, count + 1);
 }
 
 // ============ InheritedApp: cung cấp repo cho toàn bộ UI ============
@@ -441,5 +500,6 @@ class InheritedApp extends InheritedNotifier<AppRepository> {
     return i!.repo;
   }
 }
+
 
 

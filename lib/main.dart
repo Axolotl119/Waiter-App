@@ -1,5 +1,6 @@
 // main.dart
 import 'package:demodidong/screens/auth/auth_gate.dart';
+import 'package:demodidong/screens/order/order_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/app_theme.dart';
@@ -36,13 +37,14 @@ class WaiterApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Waiter App',
       theme: buildTheme(),
-      home: const AuthGate(), // 👈 KHÔNG dùng initialRoute: '/login'
+      home: const AuthGate(), 
       routes: {
         '/login': (_) => const LoginScreen(),
         '/register': (_) => const RegisterScreen(),
-        '/select_table': (_) => const SelectTableScreen(),
+        '/select_table': (_) => const TableScreen(),
         '/menu': (_) => const MenuScreen(),
         '/cart': (_) => const CartScreen(),
+        '/order': (_) => const OrderScreen(),
         '/success': (_) => const OrderSuccessScreen(),
         '/admin': (_) => const AdminDashboard(),
       },

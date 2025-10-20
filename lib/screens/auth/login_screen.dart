@@ -16,7 +16,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final repo = InheritedApp.of(context);
+    InheritedApp.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('Đăng nhập')),
       body: Center(
