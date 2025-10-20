@@ -23,10 +23,7 @@ Future<void> main() async {
 
   runApp(
     ProviderScope(
-      child: InheritedApp(
-        repo: repo,
-        child: const WaiterApp(),
-      ),
+      child: InheritedApp(repo: repo, child: const WaiterApp()),
     ),
   );
 }

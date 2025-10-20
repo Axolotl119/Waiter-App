@@ -9,8 +9,8 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final emailCtl = TextEditingController(text: 'guest@demo.com');
-  final passCtl = TextEditingController(text: '123456');
+  final emailCtl = TextEditingController(text: '');
+  final passCtl = TextEditingController(text: '');
   final keyForm = GlobalKey<FormState>();
   bool hide = true;
 

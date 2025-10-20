@@ -41,7 +41,7 @@ class CartScreen extends StatelessWidget {
                                   onPressed: () => repo.addToCart(c.item),
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.delete_outline),
+                                  icon: const Icon(Icons.headphones),
                                   onPressed: () => repo.removeFromCart(c.id),
                                 ),
                               ],
@@ -69,8 +69,8 @@ class CartScreen extends StatelessWidget {
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                          icon: const Icon(Icons.payment),
-                          label: const Text('Thanh toán (mock)'),
+                          icon: const Icon(Icons.kitchen),
+                          label: const Text('Gửi cho bếp'),
                           onPressed: () {
                             repo.checkout();
                             Navigator.pushReplacementNamed(context, '/success');
