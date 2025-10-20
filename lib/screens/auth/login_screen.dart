@@ -9,14 +9,14 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final emailCtl = TextEditingController(text: 'guest@demo.com');
-  final passCtl = TextEditingController(text: '123456');
+  final emailCtl = TextEditingController(text: '');
+  final passCtl = TextEditingController(text: '');
   final keyForm = GlobalKey<FormState>();
   bool hide = true;
 
   @override
   Widget build(BuildContext context) {
-    final repo = InheritedApp.of(context);
+    InheritedApp.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('Đăng nhập')),
       body: Center(

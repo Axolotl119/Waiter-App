@@ -74,4 +74,3 @@ Lưu ý: Trong [`AppRepository.checkout`](lib/data/app_repository.dart) có đ�
 
 ## Giấy phép
 Dự án mẫu phục vụ học tập và khởi tạo nhanh. Hãy kiểm tra và tinh chỉnh theo nhu cầu thực tế của bạn.
-

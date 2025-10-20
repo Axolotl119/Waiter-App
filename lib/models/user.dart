@@ -26,5 +26,8 @@ class AppUser {
     'email': email,
     'role': role == UserRole.admin ? 'admin' : 'waiter',
   };
+  bool isAdmin() {
+    return role == UserRole.admin;
+  }
 }
 
